@@ -1,0 +1,145 @@
+plugins {
+    id 'java'
+    id 'application'
+    id 'com.gradleup.shadow' version '8.3.6'
+}
+
+// artifact properties
+group = 'com.example'
+version = '1.0'
+description = "Flink Test"
+mainClassName = 'com.example.flink.job.AuditUpsertKafkaJob'
+
+ext {
+    javaVersion = '17'
+    flinkVersion = '1.20.0'
+    kafkaClientVersion = '3.4.0'
+
+    // 커넥터/포맷 모듈은 Flink 버전 트레일러를 맞춰야 함
+    flinkConnectorKafkaVersion = '3.4.0-1.20'
+    flinkConnectorJdbcVersion  = '3.3.0-1.20'
+    flinkFormatsAvroConfluentVersion = '1.20.0'
+
+    // 외부 라이브러리 버전
+    jacksonVersion = '2.17.2'
+    avroVersion    = '1.11.3'
+    confluentVersion = '7.7.1'
+    log4jVersion = '2.24.1'
+    scalaBinaryVersion = '_2.12'
+    slf4jVersion = '1.7.36'
+
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+sourceCompatibility = javaVersion
+targetCompatibility = javaVersion
+tasks.withType(JavaCompile) {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}
+
+applicationDefaultJvmArgs = ["-Dlog4j.configurationFile=log4j2.properties"]
+
+repositories {
+    mavenCentral()
+    maven {
+        url "https://packages.confluent.io/maven"
+    }
+}
+
+configurations {
+    // 이 구성에 들어간 것만 Shadow JAR에 포함
+    flinkShadowJar
+    }
+
+dependencies {
+    // 클러스터 제공
+    compileOnly "org.apache.flink:flink-streaming-java:${flinkVersion}"
+    compileOnly "org.apache.flink:flink-clients:${flinkVersion}"
+    compileOnly "org.apache.flink:flink-table-api-java:${flinkVersion}"
+    compileOnly "org.apache.flink:flink-table-api-java-bridge:${flinkVersion}"
+    compileOnly "org.apache.flink:flink-table-runtime:${flinkVersion}"
+    compileOnly "org.apache.flink:flink-table-planner-loader:${flinkVersion}"
+
+    // 로깅(클러스터 제공 가정)
+    compileOnly "org.apache.logging.log4j:log4j-slf4j-impl:${log4jVersion}"
+    compileOnly "org.apache.logging.log4j:log4j-api:${log4jVersion}"
+    compileOnly "org.apache.logging.log4j:log4j-core:${log4jVersion}"
+
+    // Kafka 커넥터
+    flinkShadowJar "org.apache.flink:flink-connector-kafka:${flinkConnectorKafkaVersion}"
+
+    // JDBC 커넥터 + 드라이버
+    flinkShadowJar "org.apache.flink:flink-connector-jdbc:${flinkConnectorJdbcVersion}"
+    flinkShadowJar "org.postgresql:postgresql:42.7.3"
+
+    // Avro + Confluent Schema Registry (코드에서 SR 클라이언트 직접 사용)
+    flinkShadowJar "org.apache.avro:avro:${avroVersion}"
+    flinkShadowJar("io.confluent:kafka-avro-serializer:${confluentVersion}") {
+        exclude group: 'org.apache.kafka', module: 'kafka-clients'
+    }
+    flinkShadowJar("io.confluent:kafka-schema-registry-client:${confluentVersion}") {
+        exclude group: 'org.apache.kafka', module: 'kafka-clients'
+    }
+
+    // Flink Confluent Avro 포맷 (KafkaSink에서 ConfluentRegistryAvroSerializationSchema 사용)
+    flinkShadowJar "org.apache.flink:flink-avro-confluent-registry:${flinkFormatsAvroConfluentVersion}"
+
+    // JSON 파싱
+    flinkShadowJar "com.fasterxml.jackson.core:jackson-databind:${jacksonVersion}"
+    // (필요시) jackson-annotations/jackson-core 명시 추가
+    // flinkShadowJar "com.fasterxml.jackson.core:jackson-annotations:${jacksonVersion}"
+    // flinkShadowJar "com.fasterxml.jackson.core:jackson-core:${jacksonVersion}"
+
+    // === IDE 컴파일 편의용 (실제 JAR에는 shadow로 포함) ===
+    compileOnly "org.apache.flink:flink-connector-kafka:${flinkConnectorKafkaVersion}"
+    compileOnly "org.apache.flink:flink-connector-jdbc:${flinkConnectorJdbcVersion}"
+    compileOnly "org.apache.flink:flink-avro-confluent-registry:${flinkFormatsAvroConfluentVersion}"
+    compileOnly "org.postgresql:postgresql:42.7.3"
+    compileOnly("io.confluent:kafka-avro-serializer:${confluentVersion}") {
+        exclude group: 'org.apache.kafka', module: 'kafka-clients'
+    }
+    compileOnly("io.confluent:kafka-schema-registry-client:${confluentVersion}") {
+        exclude group: 'org.apache.kafka', module: 'kafka-clients'
+    }
+    compileOnly "org.apache.avro:avro:${avroVersion}"
+    compileOnly "com.fasterxml.jackson.core:jackson-databind:${jacksonVersion}"
+}
+
+
+
+application {
+    // 실행 클래스 지정 (필요한 클래스로 변경)
+    mainClass = 'com.example.flink.job.AuditUpsertKafkaJob'
+}
+
+sourceSets {
+    main.compileClasspath += configurations.flinkShadowJar
+    main.runtimeClasspath += configurations.flinkShadowJar
+    test.compileClasspath += configurations.flinkShadowJar
+    test.runtimeClasspath += configurations.flinkShadowJar
+    javadoc.classpath += configurations.flinkShadowJar
+}
+
+run.classpath = sourceSets.main.runtimeClasspath
+
+jar {
+    manifest{
+        attributes 'Built-By': System.getProperty('user.name'),
+                'Build-Jdk': System.getProperty('java.version')
+    }
+}
+
+// Shadow JAR 설정: flinkShadowJar 구성만 포함
+shadowJar {
+    configurations = [project.configurations.flinkShadowJar]
+    archiveClassifier.set('') // -all 같은 분류자 제거
+    mergeServiceFiles()
+    exclude 'org/apache/kafka/**'   // 최후의 보루: fat JAR에 kafka-clients 강제 제외
+
+}
